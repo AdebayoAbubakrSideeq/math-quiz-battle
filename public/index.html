@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mathematics Quiz Battle</title>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+        @keyframes glow {
+            0%, 100% { box-shadow: 0 0 5px rgba(239, 68, 68, 0.5); }
+            50% { box-shadow: 0 0 15px rgba(239, 68, 68, 0.8); }
+        }
+        .fade-in { animation: fadeIn 0.5s ease-in; }
+        .slide-in { animation: slideIn 0.4s ease-in; }
+        .pulse { animation: pulse 1.5s infinite; }
+        .glow { animation: glow 1.5s infinite; }
+        .progress-bar { transition: width 0.3s ease-in-out; }
+        .answer-btn:hover { transform: scale(1.05); background-color: #e0e7ff; }
+        .answer-btn:active { transform: scale(0.95); }
+        .selected { background-color: #c7d2fe !important; border: 2px solid #4f46e5 !important; }
+        body {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            background-size: 200% 200%;
+            animation: gradientBG 15s ease infinite;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            font-size: 16px;
+        }
+        @keyframes gradientBG {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        canvas { position: fixed; top: 0; left: 0; pointer-events: none; z-index: 50; }
+        #questionArea {
+            word-break: break-word;
+            white-space: normal;
+            line-height: 1.5;
+            will-change: transform, opacity;
+        }
+        button, select {
+            font-size: 16px;
+            line-height: 1.5;
+            transition: transform 0.2s, background-color 0.2s;
+        }
+        button:focus, select:focus { outline: 2px solid #4f46e5; }
+        .timer-container {
+            width: 50px;
+            height: 50px;
+            position: relative;
+            margin-left: auto;
+        }
+        .timer-svg {
+            width: 100%;
+            height: 100%;
+            transform: rotate(-90deg);
+        }
+        .timer-circle {
+            fill: none;
+            stroke: #22c55e;
+            stroke-width: 4;
+            transition: stroke-dashoffset 0.5s linear, stroke 0.5s linear;
+        }
+        .timer-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 14px;
+            font-weight: bold;
+            color: #22c55e;
+            transition: color 0.5s linear;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+    <div id="loginScreen" class="bg-white rounded-xl shadow-lg p-6 w-full max-w-md fade-in">
+        <h1 class="text-2xl font-bold text-center text-indigo-600 mb-4">Math Quiz Battle 🧮</h1>
+        <input type="text" id="username" placeholder="Enter your username" class="w-full p-2 mb-3 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-400 slide-in">
+        <select id="difficulty" class="w-full p-2 mb-3 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-400 slide-in">
+            <option value="Easy">Easy</option>
+            <option value="Medium">Medium</option>
+            <option value="Hard">Hard</option>
+        </select>
+        <button onclick="joinGame()" class="w-full bg-indigo-600 text-white p-2 rounded hover:bg-indigo-700 pulse">Join Game</button>
+    </div>
+    <div id="gameScreen" class="hidden bg-gradient-to-br from-white to-indigo-50 rounded-xl shadow-lg p-6 w-full max-w-lg fade-in">
+        <h1 class="text-2xl font-bold text-center text-indigo-600 mb-4">Math Quiz Battle 🧮</h1>
+        <div class="flex justify-between mb-4">
+            <div id="level" class="text-base font-semibold text-indigo-600"></div>
+            <div class="timer-container glow">
+                <svg class="timer-svg">
+                    <circle class="timer-circle" cx="25" cy="25" r="22" stroke-dasharray="138.23" stroke-dashoffset="0"/>
+                </svg>
+                <div class="timer-text">0</div>
+            </div>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-2 mb-4">
+            <div id="progressBar" class="bg-indigo-600 h-2 rounded-full progress-bar" style="width: 0%"></div>
+        </div>
+        <div id="questionArea" class="text-lg text-center mb-4 slide-in"></div>
+        <div id="answers" class="grid gap-3"></div>
+        <button id="submitButton" class="hidden w-full bg-green-600 text-white p-2 mt-3 rounded hover:bg-green-700 transition">Submit</button>
+    </div>
+    <canvas id="confettiCanvas"></canvas>
+
+    <script>
+        const socket = io({ reconnection: true, reconnectionAttempts: 5, timeout: 10000 });
+        let username;
+        let selectedAnswer = null;
+        let isSubmitting = false;
+        let maxTime = 0;
+        const sounds = {
+            correct: new Audio('https://cdn.pixabay.com/audio/2023/02/28/audio_8c9e2b4c2d.mp3'),
+            incorrect: new Audio('https://cdn.pixabay.com/audio/2022/03/24/audio_4b6b1e7b6a.mp3'),
+            tick: new Audio('https://cdn.pixabay.com/audio/2022/03/24/audio_5e6b1e7b6a.mp3'),
+            gameOver: new Audio('https://cdn.pixabay.com/audio/2023/08/01/audio_7b9e2b4c2d.mp3'),
+            click: new Audio('https://cdn.pixabay.com/audio/2022/05/13/audio_540b3fe85d.mp3'),
+            question: new Audio('https://cdn.pixabay.com/audio/2022/03/24/audio_3a24b6a7b2.mp3'),
+            level: new Audio('https://cdn.pixabay.com/audio/2023/03/28/audio_6b8f30e3f2.mp3'),
+            background: new Audio('https://cdn.pixabay.com/audio/2023/03/25/audio_44c6e7f7cd.mp3')
+        };
+        sounds.background.loop = true;
+        sounds.background.volume = 0.2;
+        Object.values(sounds).forEach(sound => {
+            sound.preload = 'auto';
+            sound.load();
+        });
+
+        document.addEventListener('click', () => {
+            Object.values(sounds).forEach(sound => {
+                sound.play().catch(() => console.log('Audio play failed (likely autoplay policy)'));
+                sound.pause();
+                sound.currentTime = 0;
+            });
+            sounds.background.play().catch(e => console.log('Background music failed:', e));
+        }, { once: true });
+
+        const canvas = document.getElementById('confettiCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        let particles = [];
+        let confettiTimeout = null;
+
+        function createConfetti() {
+            particles = Array.from({ length: 60 }, () => ({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height - canvas.height,
+                size: Math.random() * 8 + 4,
+                speedX: Math.random() * 4 - 2,
+                speedY: Math.random() * 4 + 2,
+                color: `hsl(${Math.random() * 360}, 80%, 60%)`
+            }));
+            if (confettiTimeout) clearTimeout(confettiTimeout);
+            confettiTimeout = setTimeout(() => particles = [], 2500);
+        }
+
+        function animateConfetti() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            particles.forEach((p, i) => {
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x, p.y, p.size, p.size);
+                p.x += p.speedX;
+                p.y += p.speedY;
+                p.speedY += 0.1;
+                if (p.y > canvas.height) particles.splice(i, 1);
+            });
+            if (particles.length) requestAnimationFrame(animateConfetti);
+        }
+
+        function joinGame() {
+            username = document.getElementById('username').value.trim();
+            const difficulty = document.getElementById('difficulty').value;
+            if (username) {
+                socket.emit('join', { username, difficulty });
+                document.getElementById('loginScreen').classList.add('hidden');
+                document.getElementById('gameScreen').classList.remove('hidden');
+                sounds.click.play().catch(e => console.log('Click sound failed:', e));
+                console.log('Joined game:', username, 'Difficulty:', difficulty);
+            } else {
+                alert('Please enter a username');
+            }
+        }
+
+        socket.on('difficultySet', (difficulty) => {
+            sounds.level.play().catch(e => console.log('Level sound failed:', e));
+            console.log('Difficulty set:', difficulty);
+        });
+
+        socket.on('newQuestion', (data) => {
+            selectedAnswer = null;
+            isSubmitting = false;
+            document.getElementById('submitButton').classList.add('hidden');
+            maxTime = data.level === 'Easy' ? 10 : data.level === 'Medium' ? 15 : 20;
+            const elements = {
+                questionArea: document.getElementById('questionArea'),
+                answers: document.getElementById('answers'),
+                level: document.getElementById('level'),
+                progressBar: document.getElementById('progressBar')
+            };
+            elements.questionArea.textContent = data.question;
+            elements.level.textContent = `Level: ${data.level}`;
+            elements.progressBar.style.width = `${(data.questionNumber / 10) * 100}%`;
+            elements.answers.innerHTML = '';
+            data.answers.forEach((answer, index) => {
+                const btn = document.createElement('button');
+                btn.className = 'answer-btn w-full bg-gray-100 p-2 rounded text-base transition';
+                btn.textContent = answer;
+                btn.dataset.index = index;
+                btn.onclick = () => selectAnswer(index, btn);
+                elements.answers.appendChild(btn);
+            });
+            elements.questionArea.classList.add('slide-in');
+            setTimeout(() => elements.questionArea.classList.remove('slide-in'), 400);
+            sounds.question.play().catch(e => console.log('Question sound failed:', e));
+            console.log('New question:', data);
+        });
+
+        socket.on('updateTimer', (time) => {
+            const timerCircle = document.querySelector('.timer-circle');
+            const timerText = document.querySelector('.timer-text');
+            const circumference = 2 * Math.PI * 22; // r=22
+            const offset = (time / maxTime) * circumference;
+            timerCircle.style.strokeDashoffset = offset;
+            timerText.textContent = Math.ceil(time);
+            if (time <= maxTime * 0.3) {
+                timerCircle.style.stroke = '#ef4444';
+                timerText.style.color = '#ef4444';
+            } else if (time <= maxTime * 0.6) {
+                timerCircle.style.stroke = '#f59e0b';
+                timerText.style.color = '#f59e0b';
+            }
+            if (time <= 5 && time > 0) {
+                sounds.tick.play().catch(e => console.log('Tick sound failed:', e));
+            }
+            console.log('Timer update:', time);
+        });
+
+        socket.on('answerFeedback', (correct) => {
+            isSubmitting = false;
+            if (correct) {
+                sounds.correct.play().catch(e => console.log('Correct sound failed:', e));
+                createConfetti();
+                animateConfetti();
+            } else {
+                sounds.incorrect.play().catch(e => console.log('Incorrect sound failed:', e));
+            }
+            console.log('Answer feedback:', correct);
+        });
+
+        socket.on('gameOver', (data) => {
+            sounds.gameOver.play().catch(e => console.log('Game over sound failed:', e));
+            sounds.background.pause();
+            const gameScreen = document.getElementById('gameScreen');
+            gameScreen.innerHTML = `
+                <h2 class="text-xl font-bold text-center text-indigo-600 mb-4 fade-in">Game Over! 🎉</h2>
+                <p class="text-base text-center mb-4">Winner: ${data.winner.username} with ${data.winner.score} points!</p>
+                <h3 class="text-lg font-semibold mb-2">Final Scores:</h3>
+                <ul class="list-disc pl-5 text-base">
+                    ${data.players.map(player => `<li>${player.username}: ${player.score} points</li>`).join('')}
+                </ul>`;
+            createConfetti();
+            animateConfetti();
+            setTimeout(() => location.reload(), 5000);
+            console.log('Game over:', data);
+        });
+
+        socket.on('connect_error', (error) => {
+            console.log('Socket.IO connect error:', error);
+        });
+
+        function selectAnswer(index, button) {
+            if (isSubmitting) return;
+            selectedAnswer = index;
+            document.querySelectorAll('#answers button').forEach(btn => btn.classList.remove('selected'));
+            button.classList.add('selected');
+            document.getElementById('submitButton').classList.remove('hidden');
+            sounds.click.play().catch(e => console.log('Click sound failed:', e));
+            console.log('Selected answer:', index);
+        }
+
+        function submitAnswer() {
+            if (isSubmitting || selectedAnswer === null) return;
+            isSubmitting = true;
+            socket.emit('answer', selectedAnswer);
+            document.getElementById('submitButton').classList.add('hidden');
+            sounds.click.play().catch(e => console.log('Click sound failed:', e));
+            console.log('Submitted answer:', selectedAnswer);
+        }
+
+        document.getElementById('submitButton').onclick = submitAnswer;
+    </script>
+</body>
+</html>

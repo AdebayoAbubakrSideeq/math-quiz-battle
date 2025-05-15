@@ -1,0 +1,19 @@
+{
+  "name": "math-quiz-battle",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "compression": "^1.8.0",
+    "express": "^5.1.0",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {},
+  "description": ""
+}
