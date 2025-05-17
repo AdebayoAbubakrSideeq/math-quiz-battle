@@ -2,6 +2,9 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const compression = require('compression');
+const dotenv = require('dotenv');
+dotenv.config();
+
 
 const app = express();
 const server = http.createServer(app);
@@ -11,12 +14,25 @@ app.use(compression());
 app.use(express.static('public'));
 
 const players = new Map();
+const singlePlayerGames = new Map();
+let leaderboard = []; // Store top scores: { username, score, difficulty, timestamp }
 let currentQuestion = {};
 let questionTimer = null;
 let questionCount = 0;
 let gameDifficulty = null;
 const maxQuestions = 10;
 const answersReceived = new Set();
+
+function updateLeaderboard(username, score, difficulty) {
+    try {
+        leaderboard.push({ username, score, difficulty, timestamp: Date.now() });
+        leaderboard.sort((a, b) => b.score - a.score || a.timestamp - b.timestamp);
+        leaderboard = leaderboard.slice(0, 5); // Keep top 5
+        console.log('Leaderboard updated:', leaderboard);
+    } catch (error) {
+        console.error('Error updating leaderboard:', error);
+    }
+}
 
 function generateQuestion(questionNumber, level) {
     try {
@@ -125,7 +141,7 @@ function generateQuestion(questionNumber, level) {
         return questionData;
     } catch (error) {
         console.error('Error generating question:', error);
-        return generateQuestion(questionNumber, level); // Retry
+        return generateQuestion(questionNumber, level);
     }
 }
 
@@ -140,16 +156,20 @@ function shuffleArray(array) {
     }
 }
 
-function startQuestionTimer() {
+function startQuestionTimer(socket, isSinglePlayer, playerId) {
     const timeLimit = gameDifficulty === 'Easy' ? 10 : gameDifficulty === 'Medium' ? 15 : 20;
     let timeLeft = timeLimit;
     questionTimer = setInterval(() => {
-        io.emit('updateTimer', timeLeft);
+        socket.emit('updateTimer', timeLeft);
         timeLeft -= 0.5;
         if (timeLeft <= 0) {
             clearInterval(questionTimer);
             questionTimer = null;
-            nextQuestion();
+            if (isSinglePlayer) {
+                nextSinglePlayerQuestion(playerId);
+            } else {
+                nextQuestion();
+            }
         }
     }, 500);
 }
@@ -161,7 +181,10 @@ function nextQuestion() {
         const playersArray = Array.from(players.values());
         if (playersArray.length === 0) return;
         const winner = playersArray.reduce((max, p) => p.score > max.score ? p : max, playersArray[0]);
-        io.emit('gameOver', { winner, players: playersArray });
+        playersArray.forEach(player => {
+            updateLeaderboard(player.username, player.score, gameDifficulty);
+        });
+        io.emit('gameOver', { winner, players: playersArray, leaderboard });
         players.clear();
         questionCount = 0;
         gameDifficulty = null;
@@ -170,11 +193,35 @@ function nextQuestion() {
 
     currentQuestion = generateQuestion(questionCount, gameDifficulty);
     io.emit('newQuestion', currentQuestion);
-    startQuestionTimer();
+    startQuestionTimer(io, false);
+}
+
+function nextSinglePlayerQuestion(playerId) {
+    const game = singlePlayerGames.get(playerId);
+    if (!game) return;
+    game.questionCount++;
+    if (game.questionCount > maxQuestions) {
+        const socket = io.sockets.sockets.get(playerId);
+        if (socket) {
+            updateLeaderboard(game.username, game.score, game.difficulty);
+            socket.emit('gameOver', { score: game.score, leaderboard });
+        }
+        singlePlayerGames.delete(playerId);
+        return;
+    }
+
+    const question = generateQuestion(game.questionCount, game.difficulty);
+    game.currentQuestion = question;
+    singlePlayerGames.set(playerId, game);
+    const socket = io.sockets.sockets.get(playerId);
+    if (socket) {
+        socket.emit('newQuestion', question);
+        startQuestionTimer(socket, true, playerId);
+    }
 }
 
 io.on('connection', (socket) => {
-    socket.on('join', ({ username, difficulty }) => {
+    socket.on('join', ({ username, difficulty, mode }) => {
         if (typeof username !== 'string' || !username.trim()) {
             console.log('Invalid username');
             return;
@@ -183,50 +230,91 @@ io.on('connection', (socket) => {
             console.log(`Invalid difficulty from ${username}: ${difficulty}`);
             return;
         }
-        players.set(socket.id, { id: socket.id, username: username.trim(), score: 0 });
-        if (gameDifficulty === null) {
-            gameDifficulty = difficulty;
-            io.emit('difficultySet', gameDifficulty);
-            console.log(`Difficulty set to ${gameDifficulty} by ${username}`);
+        if (!['single', 'multi'].includes(mode)) {
+            console.log(`Invalid mode from ${username}: ${mode}`);
+            return;
         }
-        console.log(`Player joined: ${username}, socket.id: ${socket.id}, Difficulty: ${gameDifficulty}`);
-        if (players.size === 1) {
-            nextQuestion();
+
+        if (mode === 'single') {
+            singlePlayerGames.set(socket.id, {
+                username: username.trim(),
+                score: 0,
+                difficulty,
+                questionCount: 0,
+                currentQuestion: null
+            });
+            nextSinglePlayerQuestion(socket.id);
+            console.log(`Single player joined: ${username}, socket.id: ${socket.id}, Difficulty: ${difficulty}`);
+        } else {
+            players.set(socket.id, { id: socket.id, username: username.trim(), score: 0 });
+            if (gameDifficulty === null) {
+                gameDifficulty = difficulty;
+                io.emit('difficultySet', gameDifficulty);
+                console.log(`Difficulty set to ${gameDifficulty} by ${username}`);
+            }
+            console.log(`Multiplayer joined: ${username}, socket.id: ${socket.id}, Difficulty: ${gameDifficulty}`);
+            if (players.size === 1) {
+                nextQuestion();
+            }
         }
     });
 
     socket.on('answer', (answerIndex) => {
         try {
-            const player = players.get(socket.id);
-            if (!player) {
-                console.log(`Player with socket.id ${socket.id} not found`);
-                socket.emit('answerFeedback', false);
-                return;
-            }
-            if (answersReceived.has(socket.id)) {
-                console.log(`Duplicate answer from ${player.username}`);
-                return;
-            }
-            if (!Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex >= currentQuestion.answers.length) {
-                console.log(`Invalid answerIndex from ${player.username}: ${answerIndex}`);
-                socket.emit('answerFeedback', false);
-                return;
-            }
-            answersReceived.add(socket.id);
-
-            const correct = answerIndex === currentQuestion.correct;
-            if (correct) {
-                player.score += currentQuestion.level === 'Easy' ? 10 : currentQuestion.level === 'Medium' ? 15 : 20;
-            }
-            socket.emit('answerFeedback', correct);
-            console.log(`Answer from ${player.username}: ${answerIndex}, Correct: ${correct}, Score: ${player.score}`);
-
-            if (answersReceived.size === players.size) {
+            if (singlePlayerGames.has(socket.id)) {
+                const game = singlePlayerGames.get(socket.id);
+                if (!game) {
+                    socket.emit('answerFeedback', false);
+                    return;
+                }
+                if (!Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex >= game.currentQuestion.answers.length) {
+                    console.log(`Invalid answerIndex from single player ${game.username}: ${answerIndex}`);
+                    socket.emit('answerFeedback', false);
+                    return;
+                }
+                const correct = answerIndex === game.currentQuestion.correct;
+                if (correct) {
+                    game.score += game.difficulty === 'Easy' ? 10 : game.difficulty === 'Medium' ? 15 : 20;
+                }
+                socket.emit('answerFeedback', correct);
+                console.log(`Single player answer from ${game.username}: ${answerIndex}, Correct: ${correct}, Score: ${game.score}`);
                 if (questionTimer) {
                     clearInterval(questionTimer);
                     questionTimer = null;
                 }
-                nextQuestion();
+                nextSinglePlayerQuestion(socket.id);
+            } else {
+                const player = players.get(socket.id);
+                if (!player) {
+                    console.log(`Player with socket.id ${socket.id} not found`);
+                    socket.emit('answerFeedback', false);
+                    return;
+                }
+                if (answersReceived.has(socket.id)) {
+                    console.log(`Duplicate answer from ${player.username}`);
+                    return;
+                }
+                if (!Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex >= currentQuestion.answers.length) {
+                    console.log(`Invalid answerIndex from ${player.username}: ${answerIndex}`);
+                    socket.emit('answerFeedback', false);
+                    return;
+                }
+                answersReceived.add(socket.id);
+
+                const correct = answerIndex === currentQuestion.correct;
+                if (correct) {
+                    player.score += currentQuestion.level === 'Easy' ? 10 : currentQuestion.level === 'Medium' ? 15 : 20;
+                }
+                socket.emit('answerFeedback', correct);
+                console.log(`Multiplayer answer from ${player.username}: ${answerIndex}, Correct: ${correct}, Score: ${player.score}`);
+
+                if (answersReceived.size === players.size) {
+                    if (questionTimer) {
+                        clearInterval(questionTimer);
+                        questionTimer = null;
+                    }
+                    nextQuestion();
+                }
             }
         } catch (error) {
             console.error('Error in answer handler:', error);
@@ -236,20 +324,24 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         console.log(`Player disconnected, socket.id: ${socket.id}`);
-        players.delete(socket.id);
-        answersReceived.delete(socket.id);
-        if (players.size === 0) {
-            if (questionTimer) {
-                clearInterval(questionTimer);
-                questionTimer = null;
+        if (singlePlayerGames.has(socket.id)) {
+            singlePlayerGames.delete(socket.id);
+        } else {
+            players.delete(socket.id);
+            answersReceived.delete(socket.id);
+            if (players.size === 0) {
+                if (questionTimer) {
+                    clearInterval(questionTimer);
+                    questionTimer = null;
+                }
+                questionCount = 0;
+                gameDifficulty = null;
             }
-            questionCount = 0;
-            gameDifficulty = null;
         }
     });
 });
 
 const port = process.env.PORT || 3000;
 server.listen(port, () => {
-    console.log(`Server running on port:` + port);
+    console.log(`Server running on port ${port}`);
 });

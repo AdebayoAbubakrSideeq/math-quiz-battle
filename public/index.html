@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mathematics Quiz Battle</title>
+    <title>Mathematical Quiz Game</title>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -83,11 +83,37 @@
             color: #22c55e;
             transition: color 0.5s linear;
         }
+        .leaderboard-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        .leaderboard-table th, .leaderboard-table td {
+            padding: 0.5rem;
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .leaderboard-table th {
+            background-color: #f3f4f6;
+            font-weight: bold;
+            color: #4f46e5;
+        }
     </style>
 </head>
 <body class="min-h-screen flex items-center justify-center p-4">
-    <div id="loginScreen" class="bg-white rounded-xl shadow-lg p-6 w-full max-w-md fade-in">
-        <h1 class="text-2xl font-bold text-center text-indigo-600 mb-4">Math Quiz Battle 🧮</h1>
+    <div id="welcomeScreen" class="bg-white rounded-xl shadow-lg p-6 w-full max-w-md fade-in">
+        <h1 class="text-3xl font-bold text-center text-indigo-600 mb-4">Welcome to Mathematical Quiz Game 🧮</h1>
+        <p class="text-center text-gray-600 mb-6">Test your math skills in a fun and exciting quiz!</p>
+        <button onclick="showModeScreen()" class="w-full bg-indigo-600 text-white p-2 rounded hover:bg-indigo-700 pulse">Start</button>
+    </div>
+    <div id="modeScreen" class="hidden bg-white rounded-xl shadow-lg p-6 w-full max-w-md fade-in">
+        <h2 class="text-2xl font-bold text-center text-indigo-600 mb-4">Choose Game Mode</h2>
+        <button onclick="selectMode('single')" class="w-full bg-blue-600 text-white p-2 mb-3 rounded hover:bg-blue-700 slide-in">Single Player</button>
+        <button onclick="selectMode('multi')" class="w-full bg-purple-600 text-white p-2 mb-3 rounded hover:bg-purple-700 slide-in">Multiplayer</button>
+        <button onclick="showWelcomeScreen()" class="w-full bg-gray-400 text-white p-2 rounded hover:bg-gray-500 slide-in">Back</button>
+    </div>
+    <div id="loginScreen" class="hidden bg-white rounded-xl shadow-lg p-6 w-full max-w-md fade-in">
+        <h1 class="text-2xl font-bold text-center text-indigo-600 mb-4">Mathematical Quiz Game 🧮</h1>
         <input type="text" id="username" placeholder="Enter your username" class="w-full p-2 mb-3 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-400 slide-in">
         <select id="difficulty" class="w-full p-2 mb-3 border rounded focus:outline-none focus:ring-2 focus:ring-indigo-400 slide-in">
             <option value="Easy">Easy</option>
@@ -97,7 +123,7 @@
         <button onclick="joinGame()" class="w-full bg-indigo-600 text-white p-2 rounded hover:bg-indigo-700 pulse">Join Game</button>
     </div>
     <div id="gameScreen" class="hidden bg-gradient-to-br from-white to-indigo-50 rounded-xl shadow-lg p-6 w-full max-w-lg fade-in">
-        <h1 class="text-2xl font-bold text-center text-indigo-600 mb-4">Math Quiz Battle 🧮</h1>
+        <h1 class="text-2xl font-bold text-center text-indigo-600 mb-4">Mathematical Quiz Game 🧮</h1>
         <div class="flex justify-between mb-4">
             <div id="level" class="text-base font-semibold text-indigo-600"></div>
             <div class="timer-container glow">
@@ -118,7 +144,7 @@
 
     <script>
         const socket = io({ reconnection: true, reconnectionAttempts: 5, timeout: 10000 });
-        let username;
+        let username, gameMode;
         let selectedAnswer = null;
         let isSubmitting = false;
         let maxTime = 0;
@@ -181,15 +207,36 @@
             if (particles.length) requestAnimationFrame(animateConfetti);
         }
 
+        function showWelcomeScreen() {
+            document.getElementById('welcomeScreen').classList.remove('hidden');
+            document.getElementById('modeScreen').classList.add('hidden');
+            document.getElementById('loginScreen').classList.add('hidden');
+            document.getElementById('gameScreen').classList.add('hidden');
+            sounds.click.play().catch(e => console.log('Click sound failed:', e));
+        }
+
+        function showModeScreen() {
+            document.getElementById('welcomeScreen').classList.add('hidden');
+            document.getElementById('modeScreen').classList.remove('hidden');
+            sounds.click.play().catch(e => console.log('Click sound failed:', e));
+        }
+
+        function selectMode(mode) {
+            gameMode = mode;
+            document.getElementById('modeScreen').classList.add('hidden');
+            document.getElementById('loginScreen').classList.remove('hidden');
+            sounds.click.play().catch(e => console.log('Click sound failed:', e));
+        }
+
         function joinGame() {
             username = document.getElementById('username').value.trim();
             const difficulty = document.getElementById('difficulty').value;
             if (username) {
-                socket.emit('join', { username, difficulty });
+                socket.emit('join', { username, difficulty, mode: gameMode });
                 document.getElementById('loginScreen').classList.add('hidden');
                 document.getElementById('gameScreen').classList.remove('hidden');
                 sounds.click.play().catch(e => console.log('Click sound failed:', e));
-                console.log('Joined game:', username, 'Difficulty:', difficulty);
+                console.log('Joined game:', username, 'Mode:', gameMode, 'Difficulty:', difficulty);
             } else {
                 alert('Please enter a username');
             }
@@ -232,7 +279,7 @@
         socket.on('updateTimer', (time) => {
             const timerCircle = document.querySelector('.timer-circle');
             const timerText = document.querySelector('.timer-text');
-            const circumference = 2 * Math.PI * 22; // r=22
+            const circumference = 2 * Math.PI * 22;
             const offset = (time / maxTime) * circumference;
             timerCircle.style.strokeDashoffset = offset;
             timerText.textContent = Math.ceil(time);
@@ -267,14 +314,36 @@
             const gameScreen = document.getElementById('gameScreen');
             gameScreen.innerHTML = `
                 <h2 class="text-xl font-bold text-center text-indigo-600 mb-4 fade-in">Game Over! 🎉</h2>
-                <p class="text-base text-center mb-4">Winner: ${data.winner.username} with ${data.winner.score} points!</p>
+                <p class="text-base text-center mb-4">${gameMode === 'single' ? `Your score: ${data.score} points!` : `Winner: ${data.winner.username} with ${data.winner.score} points!`}</p>
+                ${gameMode === 'multi' ? `
                 <h3 class="text-lg font-semibold mb-2">Final Scores:</h3>
                 <ul class="list-disc pl-5 text-base">
                     ${data.players.map(player => `<li>${player.username}: ${player.score} points</li>`).join('')}
-                </ul>`;
+                </ul>` : ''}
+                <h3 class="text-lg font-semibold mt-4 mb-2">Leaderboard</h3>
+                <table class="leaderboard-table">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Username</th>
+                            <th>Score</th>
+                            <th>Difficulty</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${data.leaderboard.map((entry, index) => `
+                            <tr>
+                                <td>${index + 1}</td>
+                                <td>${entry.username}</td>
+                                <td>${entry.score}</td>
+                                <td>${entry.difficulty}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+                <button onclick="location.reload()" class="w-full bg-indigo-600 text-white p-2 mt-4 rounded hover:bg-indigo-700">Play Again</button>`;
             createConfetti();
             animateConfetti();
-            setTimeout(() => location.reload(), 5000);
             console.log('Game over:', data);
         });
 
